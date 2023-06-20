@@ -29,9 +29,13 @@
 #include <string>
 #include <utility>
 #include <vector>
+#include <fstream>
 
 using namespace llvm;
 using namespace llvm::orc;
+
+std::string srcLines;
+size_t srcCur;
 
 //===----------------------------------------------------------------------===//
 // Lexer
@@ -73,12 +77,12 @@ static int gettok() {
     static int LastChar = ' ';
 
     // Skip any whitespace.
-    while (isspace(LastChar))
-        LastChar = getchar();
+    while (isspace(LastChar) && srcCur < srcLines.size())
+        LastChar = srcLines[srcCur++];
 
     if (isalpha(LastChar)) { // identifier: [a-zA-Z][a-zA-Z0-9]*
         IdentifierStr = LastChar;
-        while (isalnum((LastChar = getchar())))
+        while (srcCur < srcLines.size() && isalnum((LastChar = srcLines[srcCur++])))
             IdentifierStr += LastChar;
 
         if (IdentifierStr == "def")
@@ -104,22 +108,22 @@ static int gettok() {
         return tok_identifier;
     }
 
-    if (isdigit(LastChar) || LastChar == '.') { // Number: [0-9.]+
+    if ((isdigit(LastChar) || LastChar == '.') && srcCur < srcLines.size()) { // Number: [0-9.]+
         std::string NumStr;
         do {
             NumStr += LastChar;
-            LastChar = getchar();
-        } while (isdigit(LastChar) || LastChar == '.');
+            LastChar = srcLines[srcCur++];
+        } while ((isdigit(LastChar) || LastChar == '.') && srcCur < srcLines.size());
 
         NumVal = strtod(NumStr.c_str(), nullptr);
         return tok_number;
     }
 
-    if (LastChar == '#') {
+    if (LastChar == '#' && srcCur < srcLines.size()) {
         // Comment until end of line.
         do
-            LastChar = getchar();
-        while (LastChar != EOF && LastChar != '\n' && LastChar != '\r');
+            LastChar = srcLines[srcCur++];
+        while (LastChar != EOF && LastChar != '\n' && LastChar != '\r' && srcCur < srcLines.size());
 
         if (LastChar != EOF)
             return gettok();
@@ -131,7 +135,10 @@ static int gettok() {
 
     // Otherwise, just return the character as its ascii value.
     int ThisChar = LastChar;
-    LastChar = getchar();
+    if (srcCur < srcLines.size())
+    {
+        LastChar = srcLines[srcCur++];
+    }
     return ThisChar;
 }
 
@@ -307,9 +314,11 @@ static int getNextToken() { return CurTok = gettok(); }
 /// defined.
 static std::map<char, int> BinopPrecedence;
 
+#define myIsASCII(c)   ((unsigned)(c) < 0x80)
+
 /// GetTokPrecedence - Get the precedence of the pending binary operator token.
 static int GetTokPrecedence() {
-    if (!isascii(CurTok))
+    if (!myIsASCII(CurTok))
         return -1;
 
     // Make sure it's a declared binop.
@@ -543,7 +552,7 @@ static std::unique_ptr<ExprAST> ParsePrimary() {
 ///   ::= '!' unary
 static std::unique_ptr<ExprAST> ParseUnary() {
     // If the current token is not an operator, it must be a primary expr.
-    if (!isascii(CurTok) || CurTok == '(' || CurTok == ',')
+    if (!myIsASCII(CurTok) || CurTok == '(' || CurTok == ',')
         return ParsePrimary();
 
     // If this is a unary operator, read it.
@@ -622,7 +631,7 @@ static std::unique_ptr<PrototypeAST> ParsePrototype() {
         break;
     case tok_unary:
         getNextToken();
-        if (!isascii(CurTok))
+        if (!myIsASCII(CurTok))
             return LogErrorP("Expected unary operator");
         FnName = "unary";
         FnName += (char)CurTok;
@@ -631,7 +640,7 @@ static std::unique_ptr<PrototypeAST> ParsePrototype() {
         break;
     case tok_binary:
         getNextToken();
-        if (!isascii(CurTok))
+        if (!myIsASCII(CurTok))
             return LogErrorP("Expected binary operator");
         FnName = "binary";
         FnName += (char)CurTok;
@@ -1203,7 +1212,7 @@ static void HandleTopLevelExpression() {
 
 /// top ::= definition | external | expression | ';'
 static void MainLoop() {
-    while (true) {
+    while (srcCur < srcLines.size()) {
         fprintf(stderr, "ready> ");
         switch (CurTok) {
         case tok_eof:
@@ -1247,10 +1256,43 @@ extern "C" DLLEXPORT double printd(double X) {
 }
 
 //===----------------------------------------------------------------------===//
+// "Read File" functions.
+//===----------------------------------------------------------------------===//
+
+std::string readFileToString(const std::string& fileName)
+{
+    std::ifstream fin(fileName);
+    std::string content((std::istreambuf_iterator<char>(fin)),
+        (std::istreambuf_iterator<char>()));
+    return content;
+}
+
+void show_usage()
+{
+    fprintf(stderr, "%s\n", "Usage: irt.exe source.ks\n"
+        "Options:\n"
+        "\t-h,--help\t\tShow this help message\n"
+    );
+}
+
+//===----------------------------------------------------------------------===//
 // Main driver code.
 //===----------------------------------------------------------------------===//
 
-int main() {
+int main(int argc, char** argv) {
+
+    if (argc != 2 || (std::string(argv[1]) == "-h" || std::string(argv[1]) == "--help"))
+    {
+        show_usage();
+        return 0;
+    }
+
+    std::string srcFilename(argv[1]);
+    srcLines = readFileToString(srcFilename);
+    srcCur = 0;
+
+    fprintf(stderr, "%s\n", srcLines.c_str());
+
     InitializeNativeTarget();
     InitializeNativeTargetAsmPrinter();
     InitializeNativeTargetAsmParser();
